@@ -317,6 +317,7 @@ static int set_parameter_copybit(
                     ctx->mFlags &= ~MDP_BLUR;
                 }
                 break;
+#ifndef TARGET_MSM7x27
             case COPYBIT_PREMULTIPLIED_ALPHA:
                 if(value == COPYBIT_ENABLE) {
                     ctx->mFlags |= MDP_BLEND_FG_PREMULT;
@@ -324,6 +325,7 @@ static int set_parameter_copybit(
                     ctx->mFlags &= ~MDP_BLEND_FG_PREMULT;
                 }
                 break;
+#endif
             case COPYBIT_TRANSFORM:
                 ctx->mFlags &= ~0x7;
                 ctx->mFlags |= value & 0x7;
