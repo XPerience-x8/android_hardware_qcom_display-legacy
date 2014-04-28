@@ -36,7 +36,7 @@
 * */
 
 #include <linux/msm_mdp.h>
-#include <linux/msm_rotator.h>
+#include "msm_rotator.h"
 #include <sys/ioctl.h>
 #include <utils/Log.h>
 #include <errno.h>
