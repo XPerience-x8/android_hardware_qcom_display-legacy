@@ -15,7 +15,7 @@
  */
 
 
-// #define LOG_NDEBUG 0
+#define LOG_NDEBUG 1
 #define LOG_TAG "lights"
 
 #include <cutils/log.h>
@@ -32,25 +32,36 @@
 
 #include <hardware/lights.h>
 
+#define MANUAL         "i2c"
+#define AUTOMATIC      "als"
+
 /******************************************************************************/
 
 static pthread_once_t g_init = PTHREAD_ONCE_INIT;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct light_state_t g_notification;
 static struct light_state_t g_battery;
+static int g_backlight = 255;
+static int g_buttons = 1;
 static int g_attention = 0;
 
-char const*const RED_LED_FILE
-        = "/sys/class/leds/red/brightness";
+char const*const RED_LED_FILE    = "/sys/devices/virtual/misc/rgb_led/rgb_led/red:brightness";
+char const*const GREEN_LED_FILE  = "/sys/devices/virtual/misc/rgb_led/rgb_led/green:brightness";
+char const*const BLUE_LED_FILE   = "/sys/devices/virtual/misc/rgb_led/rgb_led/blue:brightness";
+char const*const FREQ_FILE       = "/sys/devices/virtual/misc/rgb_led/rgb_led/frequency";
+char const*const PWM_FILE        = "/sys/devices/virtual/misc/rgb_led/rgb_led/pwm";
+char const*const BLINK_FILE      = "/sys/devices/virtual/misc/rgb_led/rgb_led/blink";
+char const*const POWER_FILE      = "/sys/devices/virtual/misc/rgb_led/rgb_led/power";
 
-char const*const GREEN_LED_FILE
-        = "/sys/class/leds/green/brightness";
+static int LCD_FILE = "/sys/devices/platform/i2c-adapter/i2c-0/0-0036/br::intensity";
 
-char const*const BLUE_LED_FILE
-        = "/sys/class/leds/blue/brightness";
+char const*const ALS_FILE = "/sys/devices/platform/i2c-adapter/i2c-0/0-0036/mode";
 
-char const*const LCD_FILE
-        = "/sys/class/leds/lcd-backlight/brightness";
+
+char const*const BUTTON_FILE     = "";
+
+char const*const FLASH_FILE     = "/sys/devices/platform/msm_pmic_flash_led/cmaflash:enable";
+char const*const SPOTLIGHT_FILE     = "/sys/devices/platform/msm_pmic_flash_led/spotlight:enable";
 
 /**
  * device methods
@@ -103,9 +114,25 @@ set_light_backlight(struct light_device_t* dev,
         struct light_state_t const* state)
 {
     int err = 0;
+
     int brightness = rgb_to_brightness(state);
+
     pthread_mutex_lock(&g_lock);
     err = write_int(LCD_FILE, brightness);
+    pthread_mutex_unlock(&g_lock);
+
+    return err;
+}
+
+static int
+set_light_buttons(struct light_device_t* dev,
+        struct light_state_t const* state)
+{
+    int err = 0;
+    int on = is_lit(state);
+    pthread_mutex_lock(&g_lock);
+    g_buttons = on;
+    err = write_int(BUTTON_FILE, on?255:0);
     pthread_mutex_unlock(&g_lock);
     return err;
 }
@@ -143,34 +170,25 @@ set_speaker_light_locked(struct light_device_t* dev,
     green = (colorRGB >> 8) & 0xFF;
     blue = colorRGB & 0xFF;
 
-    // R, G, B value is among 0, 1, 2
-    if (red > 128)  red = 2;
-    else if (red <= 128 && red > 0) red = 1;
-    if (green > 128)  green = 2;
-    else if (green <= 128 && green > 0) green = 1;
-    if (blue > 128)  blue = 2;
-    else if (blue <= 128 && blue > 0) red = 1;
+        write_int(RED_LED_FILE, red);
+        write_int(GREEN_LED_FILE, green);
+        write_int(BLUE_LED_FILE, blue);
+        write_int(PWM_FILE, 255);
+        write_int(BLINK_FILE, 1);
 
-    write_int(RED_LED_FILE, red);
-    write_int(GREEN_LED_FILE, green);
-    write_int(BLUE_LED_FILE, blue);
-
-    // TODO
     if (onMS > 0 && offMS > 0) {
         int totalMS = onMS + offMS;
 
         // the LED appears to blink about once per second if freq is 20
         // 1000ms / 20 = 50
-        freq = totalMS / 50;
+        freq = (onMS / 200) * 5;
+        //freq = totalMS / 250;
         // pwm specifies the ratio of ON versus OFF
         // pwm = 0 -> always off
         // pwm = 255 => always on
-        pwm = (onMS * 255) / totalMS;
-
+        //pwm = (onMS / 100) * 5;
+        pwm = (onMS / 200) * 5;
         // the low 4 bits are ignored, so round up if necessary
-        if (pwm > 0 && pwm < 16)
-            pwm = 16;
-
         blink = 1;
     } else {
         blink = 0;
@@ -178,9 +196,11 @@ set_speaker_light_locked(struct light_device_t* dev,
         pwm = 0;
     }
 
-    if (blink) {
-        write_int(RED_LED_FILE, freq);
-    }
+        if (blink) {
+            write_int(FREQ_FILE, freq);
+            write_int(PWM_FILE, pwm);
+            write_int(BLINK_FILE, 1);
+        }
 
     return 0;
 }
@@ -227,7 +247,6 @@ set_light_attention(struct light_device_t* dev,
     } else if (state->flashMode == LIGHT_FLASH_NONE) {
         g_attention = 0;
     }
-    handle_speaker_battery_locked(dev);
     pthread_mutex_unlock(&g_lock);
     return 0;
 }
@@ -257,16 +276,24 @@ static int open_lights(const struct hw_module_t* module, char const* name,
     int (*set_light)(struct light_device_t* dev,
             struct light_state_t const* state);
 
-    if (0 == strcmp(LIGHT_ID_BACKLIGHT, name))
+    if (0 == strcmp(LIGHT_ID_BACKLIGHT, name)) {
         set_light = set_light_backlight;
-    else if (0 == strcmp(LIGHT_ID_BATTERY, name))
+    }
+    else if (0 == strcmp(LIGHT_ID_BUTTONS, name)) {
+        set_light = set_light_buttons;
+    }
+    else if (0 == strcmp(LIGHT_ID_BATTERY, name)) {
         set_light = set_light_battery;
-    else if (0 == strcmp(LIGHT_ID_NOTIFICATIONS, name))
+    }
+    else if (0 == strcmp(LIGHT_ID_NOTIFICATIONS, name)) {
         set_light = set_light_notifications;
-    else if (0 == strcmp(LIGHT_ID_ATTENTION, name))
+    }
+    else if (0 == strcmp(LIGHT_ID_ATTENTION, name)) {
         set_light = set_light_attention;
-    else
+    }
+    else {
         return -EINVAL;
+    }
 
     pthread_once(&g_init, init_globals);
 
@@ -283,6 +310,7 @@ static int open_lights(const struct hw_module_t* module, char const* name,
     return 0;
 }
 
+
 static struct hw_module_methods_t lights_module_methods = {
     .open =  open_lights,
 };
@@ -295,7 +323,7 @@ struct hw_module_t HAL_MODULE_INFO_SYM = {
     .version_major = 1,
     .version_minor = 0,
     .id = LIGHTS_HARDWARE_MODULE_ID,
-    .name = "lights Module",
-    .author = "Google, Inc.",
+    .name = "QCT MSM7K lights Module",
+    .author = "Google, Inc. && Carlos Jesús B. C.",
     .methods = &lights_module_methods,
 };
